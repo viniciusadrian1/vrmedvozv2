@@ -1,0 +1,242 @@
+// Lógica do chat com backend (OpenAI via proxy local)
+
+const chatMessagesEl = document.getElementById('chatMessages');
+const chatFormEl = document.getElementById('chatForm');
+const chatInputEl = document.getElementById('chatInput');
+const sendBtnEl = document.getElementById('sendBtn');
+let typingEl = null;
+
+
+// --- Voice recording integration ---
+const recordBtn = document.createElement('button');
+recordBtn.id = 'recordBtn';
+recordBtn.type = 'button';
+recordBtn.className = 'px-3 py-2 rounded bg-red-600 hover:bg-red-500 text-white';
+recordBtn.textContent = '🎤 Falar';
+let mediaRecorder = null;
+let chunks = [];
+let isRecording = false;
+
+recordBtn.addEventListener('click', async () => {
+  if (!isRecording) {
+    // start recording
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream);
+      chunks = [];
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      mediaRecorder.onstop = async () => {
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        await sendVoiceBlob(blob);
+      };
+      mediaRecorder.start();
+      isRecording = true;
+      recordBtn.textContent = '⏹️ Parar';
+      recordBtn.classList.remove('bg-red-600'); recordBtn.classList.add('bg-gray-600');
+    } catch (err) {
+      alert('Erro ao acessar microfone: ' + err.message);
+    }
+  } else {
+    // stop
+    mediaRecorder && mediaRecorder.stop();
+    isRecording = false;
+    recordBtn.textContent = '🎤 Falar';
+    recordBtn.classList.remove('bg-gray-600'); recordBtn.classList.add('bg-red-600');
+  }
+});
+
+// send recorded blob to /api/voice/chat
+async function sendVoiceBlob(blob) {
+  try {
+    // criar mensagem temporária mostrando que estamos transcrevendo
+    const tempEl = document.createElement('div');
+    tempEl.className = 'flex justify-end';
+    tempEl.innerHTML = `
+      <div id="tempTranscript" class="max-w-[85%] rounded-lg bg-emerald-700 text-white px-3 py-2 text-sm">⏳ Transcrevendo áudio...</div>
+    `;
+    chatMessagesEl.appendChild(tempEl);
+    // enviar arquivo
+    const fd = new FormData();
+    fd.append('file', blob, 'recording.webm');
+    const r = await fetch('/api/voice/chat', { method: 'POST', body: fd });
+    if (!r.ok) {
+      const txt = await r.text();
+      // remover temp e mostrar erro
+      tempEl.remove();
+      addAssistantMessage('Erro ao processar áudio: ' + (txt || r.statusText));
+      return;
+    }
+    const json = await r.json();
+    // substituir mensagem temporária pela transcrição real (ou remover se vazio)
+    if (json.transcript) {
+      const tempInner = tempEl.querySelector('#tempTranscript');
+      if (tempInner) {
+        tempInner.innerHTML = escapeHtml(json.transcript);
+      } else {
+        addUserMessage(json.transcript);
+      }
+    } else {
+      tempEl.remove();
+      addUserMessage('[Áudio sem transcrição]');
+    }
+
+    // adicionar a resposta textual da IA
+    if (json.reply) {
+      addAssistantMessage(json.reply);
+    }
+
+    // reproduzir áudio se houver
+    if (json.audio_base64) {
+      try {
+        const audioBlob = base64ToBlob(json.audio_base64, 'audio/mpeg');
+        const url = URL.createObjectURL(audioBlob);
+        const a = new Audio(url);
+        await a.play().catch(e => console.warn('Erro ao reproduzir áudio:', e));
+      } catch (e) {
+        console.warn('Erro ao decodificar/reproduzir áudio da IA:', e);
+      }
+    }
+  } catch (err) {
+    console.error(err);
+    addAssistantMessage('Erro ao processar áudio: ' + err.message);
+  }
+}
+
+function base64ToBlob(base64, mime) {
+  const bytes = atob(base64);
+  let length = bytes.length;
+  const out = new Uint8Array(length);
+  for (let i = 0; i < length; i++) out[i] = bytes.charCodeAt(i);
+  return new Blob([out], { type: mime });
+}(base64, mime) {
+  const bytes = atob(base64);
+  let length = bytes.length;
+  const out = new Uint8Array(length);
+  for (let i = 0; i < length; i++) out[i] = bytes.charCodeAt(i);
+  return new Blob([out], { type: mime });
+}
+// --- fim integração de voz ---
+
+
+addAssistantMessage('Olá! Sou seu assistente especializado em pulmão, doenças hepáticas e patologia. Como posso ajudar hoje?');
+
+chatFormEl.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = chatInputEl.value.trim();
+  if (!text) return;
+  addUserMessage(text);
+  chatInputEl.value = '';
+
+  sendBtnEl.disabled = true;
+  try {
+    showTyping();
+    const answer = await fetchAnswer(text);
+    hideTyping();
+    addAssistantMessage(answer);
+  } catch (err) {
+    console.error(err);
+    hideTyping();
+    addAssistantMessage('Desculpe, ocorreu um erro ao consultar o modelo. Tente novamente.');
+  } finally {
+    sendBtnEl.disabled = false;
+  }
+});
+
+async function fetchAnswer(userText) {
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages: [
+        { role: 'system', content: 'Você é um assistente médico especializado em pulmão, doenças hepáticas e patologia. Responda em linguagem simples, técnica quando necessário, e sempre em português. Inclua avisos de que não substitui consulta médica.' },
+        { role: 'user', content: userText }
+      ]
+    })
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || 'Erro na API');
+  }
+
+  const data = await res.json();
+  return data.answer || 'Sem resposta.';
+}
+
+function addUserMessage(text) {
+  const el = document.createElement('div');
+  el.className = 'flex justify-end';
+  el.innerHTML = `
+    <div class="max-w-[85%] rounded-lg bg-emerald-700 text-white px-3 py-2 text-sm">${escapeHtml(text)}</div>
+  `;
+  chatMessagesEl.appendChild(el);
+  chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
+
+function addAssistantMessage(text) {
+  const el = document.createElement('div');
+  el.className = 'flex justify-start';
+  el.innerHTML = `
+    <div class="max-w-[85%] rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-sm whitespace-pre-wrap">${escapeHtml(text)}</div>
+  `;
+  chatMessagesEl.appendChild(el);
+  chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
+
+function showTyping() {
+  if (typingEl) return;
+  typingEl = document.createElement('div');
+  typingEl.className = 'flex justify-start';
+  typingEl.innerHTML = `
+    <div class="max-w-[85%] rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-sm whitespace-pre-wrap">
+      <span class="inline-flex">
+        <span class="w-1.5 h-1.5 bg-slate-300 rounded-full mx-[2px] animate-pulse"></span>
+        <span class="w-1.5 h-1.5 bg-slate-300 rounded-full mx-[2px] animate-pulse" style="animation-delay:120ms"></span>
+        <span class="w-1.5 h-1.5 bg-slate-300 rounded-full mx-[2px] animate-pulse" style="animation-delay:240ms"></span>
+      </span>
+    </div>`;
+  chatMessagesEl.appendChild(typingEl);
+  chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
+
+function hideTyping() {
+  if (!typingEl) return;
+  typingEl.remove();
+  typingEl = null;
+}
+
+function escapeHtml(unsafe) {
+  return unsafe
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+
+
+
+
+// ensure the record button is placed in the DOM and exposed for index.html script
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    // try to find a dedicated container first
+    const container = document.getElementById('recordContainer');
+    if (container && typeof recordBtn !== 'undefined') {
+      container.appendChild(recordBtn);
+    } else {
+      // fallback: insert before the send button inside the chat form
+      const form = document.getElementById('chatForm');
+      const sendBtn = document.getElementById('sendBtn');
+      if (form && typeof recordBtn !== 'undefined') {
+        if (sendBtn) form.insertBefore(recordBtn, sendBtn);
+        else form.appendChild(recordBtn);
+      }
+    }
+    // expose globally just in case other scripts expect it
+    if (typeof recordBtn !== 'undefined') window.recordBtn = recordBtn;
+  } catch (e) {
+    console.warn('Erro ao inserir recordBtn no DOM:', e);
+  }
+});

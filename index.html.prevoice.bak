@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VR Med - pulmão 3D</title>
+  <meta name="description" content="VR Med - Visualização 3D e VR do pulmão com chat especializado.">
+  <!-- Tailwind CSS via CDN (dev). Se não carregar, CSS próprio garante layout básico) -->
+  <script defer src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="style.css">
+  <!-- Import map para resolver módulos ESM de Three.js -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/node_modules/three/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body class="bg-slate-900 text-slate-100 h-screen overflow-hidden">
+  <div id="app" class="flex h-screen">
+    <!-- Área 3D -->
+    <main class="relative flex-1">
+      <div id="canvas-container" class="w-full h-full"></div>
+
+      <!-- Barra superior -->
+      <div class="absolute top-4 left-4 right-4 flex items-center gap-2">
+        <div class="px-3 py-2 rounded bg-slate-800/70 backdrop-blur border border-slate-700 text-sm">
+          <span class="font-semibold">VR Med</span> · Visualização 3D do pulmão
+        </div>
+        <div class="ml-auto flex gap-2">
+          <button id="resetCameraBtn" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm">Resetar câmera</button>
+          <button id="toggleAxesBtn" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm">Linhas (eixos)</button>
+          <button id="mouseModeBtn" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm">Modo Mouse</button>
+          <!-- O botão VR será injetado aqui -->
+          <div id="vrButtonContainer"></div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Painel de chat -->
+    <aside class="w-[380px] max-w-[90vw] border-l border-slate-800 bg-slate-900/90 backdrop-blur p-4 flex flex-col gap-3">
+      <div>
+        <h1 class="text-lg font-semibold">Assistente Pulmonar</h1>
+        <p class="text-xs text-slate-300">Especializado em pulmão e suas patologias.</p>
+      </div>
+
+      <div id="chatMessages" class="flex-1 overflow-auto space-y-3 pr-1 custom-scroll"></div>
+
+      <form id="chatForm" class="flex gap-2">
+        <input id="chatInput" type="text" placeholder="Pergunte sobre pulmão e patologias..." class="flex-1 px-3 py-2 rounded bg-slate-800 border border-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500" required />
+        <button id="sendBtn" type="submit" class="px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-500 text-white">Enviar</button>
+      <div id="recordContainer" class="ml-2"></div></form>
+    </aside>
+  </div>
+
+  <script type="module" src="main.js"></script>
+  <script defer src="chat.js"></script>
+
+<script>
+// move the record button into the form once DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  const container = document.getElementById('recordContainer');
+  const sendBtn = document.getElementById('sendBtn');
+  if (container && window.recordBtn) {
+    container.appendChild(window.recordBtn);
+  } else if (container) {
+    // chat.js creates the button element 'recordBtn'; if not global, we create a small placeholder
+    // but chat.js actually creates and appends the button, so nothing else required here.
+  }
+});
+</script>
+
+</body>
+</html>
+
+

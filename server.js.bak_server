@@ -1,0 +1,180 @@
+require('./chat_context');
+// Servidor Node/Express: proxy para OpenAI e host estático
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const path = require('path');
+const OpenAI = require('openai');
+
+const app = express();
+const port = process.env.PORT || 3000;
+
+app.use(cors());
+app.use(express.json({ limit: '1mb' }));
+
+// Servir a aplicação estática
+app.use(express.static(path.join(__dirname)));
+// Servir node_modules para importar módulos ES diretamente no navegador
+app.use('/node_modules', express.static(path.join(__dirname, 'node_modules')));
+
+// Endpoint de chat
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { messages } = req.body || {};
+    if (!Array.isArray(messages)) {
+      return res.status(400).json({ error: 'messages inválido' });
+    }
+
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    // Injeta uma instrução de segurança para fontes confiáveis e citações
+    const systemSafety = {
+      role: 'system',
+      content:
+        'Você é um assistente médico especializado em pulmão e patologia. Responda SOMENTE com base em fontes médicas reconhecidas (ex.: diretrizes EASL/AASLD, OMS, UpToDate, Harrison, Robbins, Cochrane, PubMed, livros-texto padrão). Quando possível, inclua 1-3 citações curtas (autor/órgão, ano) no final. Não invente dados. Se não tiver certeza, diga que não tem evidência suficiente. Responda em português e inclua que não substitui consulta médica.'
+    };
+
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [systemSafety, ...messages],
+      temperature: 0.2,
+      max_tokens: 600
+    });
+
+    const answer = response.choices?.[0]?.message?.content || '';
+    res.json({ answer });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Erro ao consultar o modelo. Verifique sua OPENAI_API_KEY.');
+  }
+});
+
+
+
+// --- Voice endpoints (ElevenLabs) ---
+const multer = require('multer');
+const fs = require('fs');
+const FormData = require('form-data');
+
+const upload = multer({ dest: 'tmp/' });
+
+const ELEVEN_KEY = process.env.ELEVEN_API_KEY || '';
+const ELEVEN_VOICE_ID = process.env.ELEVEN_VOICE_ID || '';
+
+// 1) Transcrição simples (arquivo multipart 'file')
+app.post('/api/voice/transcribe', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado' });
+    const filePath = req.file.path;
+    const form = new FormData();
+    form.append('model_id', 'scribe_v1');
+    form.append('file', fs.createReadStream(filePath));
+
+    const r = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
+      method: 'POST',
+      headers: { 'xi-api-key': ELEVEN_KEY },
+      body: form
+    });
+    const json = await r.json();
+    fs.unlinkSync(filePath);
+    if (!r.ok) return res.status(r.status).json({ error: json });
+    return res.json(json);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: String(err) });
+  }
+});
+
+// 2) TTS simples: recebe { text } e devolve áudio (audio/mpeg)
+app.post('/api/voice/tts', async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ error: 'Faltando campo text' });
+    if (!ELEVEN_KEY || !ELEVEN_VOICE_ID) return res.status(500).json({ error: 'ELEVEN_API_KEY ou ELEVEN_VOICE_ID não configurados' });
+
+    const ttsUrl = `https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE_ID}`;
+    const r = await fetch(ttsUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'audio/mpeg',
+        'xi-api-key': ELEVEN_KEY
+      },
+      body: JSON.stringify({ text })
+    });
+    if (!r.ok) {
+      const txt = await r.text();
+      return res.status(r.status).send(txt);
+    }
+    const buffer = Buffer.from(await r.arrayBuffer());
+    res.set({ 'Content-Type': 'audio/mpeg', 'Content-Length': buffer.length });
+    return res.send(buffer);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: String(err) });
+  }
+});
+
+// 3) Fluxo completo: recebe áudio (file), faz STT, envia para /api/chat, gera TTS e retorna JSON com audio_base64
+app.post('/api/voice/chat', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado' });
+    if (!ELEVEN_KEY || !ELEVEN_VOICE_ID) return res.status(500).json({ error: 'ELEVEN_API_KEY ou ELEVEN_VOICE_ID não configurados' });
+
+    const filePath = req.file.path;
+    const form = new FormData();
+    form.append('model_id', 'scribe_v1');
+    form.append('file', fs.createReadStream(filePath));
+
+    const sttResp = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
+      method: 'POST',
+      headers: { 'xi-api-key': ELEVEN_KEY },
+      body: form
+    });
+    const sttJson = await sttResp.json();
+    fs.unlinkSync(filePath);
+    if (!sttResp.ok) return res.status(sttResp.status).json({ error: sttJson });
+
+    const userText = sttJson.text || '';
+
+    // enviar para o chat local (mesmo servidor)
+    const chatUrl = `http://localhost:${port}/api/chat`;
+    const chatResp = await fetch(chatUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: userText })
+    });
+    const chatJson = await chatResp.json();
+    const chatReplyText = chatJson.answer || chatJson.reply || chatJson.text || '';
+
+    // gerar TTS da resposta
+    const ttsUrl = `https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE_ID}`;
+    const ttsResp = await fetch(ttsUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'audio/mpeg',
+        'xi-api-key': ELEVEN_KEY
+      },
+      body: JSON.stringify({ text: chatReplyText })
+    });
+    if (!ttsResp.ok) {
+      const txt = await ttsResp.text();
+      return res.status(ttsResp.status).send(txt);
+    }
+    const ttsBuffer = Buffer.from(await ttsResp.arrayBuffer());
+    const audio_base64 = ttsBuffer.toString('base64');
+
+    return res.json({ transcript: userText, reply: chatReplyText, audio_base64 });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: String(err) });
+  }
+});
+// --- fim dos endpoints de voz ---
+
+app.listen(port, '0.0.0.0', () => {
+  console.log(`VR Med rodando em http://localhost:${port} (acesse via IP da rede local)`);
+});
+
+
